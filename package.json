@@ -1,0 +1,15 @@
+{
+  "name": "setup-docker-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BuildPulse setup-docker-builder GitHub Action",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --minify && ncc build src/post.js -o dist-post --minify && mv dist-post/index.js dist/post.js && rm -rf dist-post"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  }
+}

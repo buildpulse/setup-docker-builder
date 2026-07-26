@@ -1,0 +1,10 @@
+name: 'BuildPulse Setup Docker Builder'
+description: >-
+  Point buildx at the local buildkitd builder on BuildPulse docker-builder
+  runners, with a persistent layer cache — zero cache configuration. Drop-in
+  replacement for docker/setup-buildx-action.
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+  post: 'dist/post.js'
+  post-if: 'success()'
