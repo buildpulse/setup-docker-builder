@@ -81,19 +81,28 @@ function commitToS3(bucket, ns, region) {
   return bytes;
 }
 
-// Cache-write policy. By DEFAULT, pull_request builds also write the shared per-tenant
-// cache (matching how hosted CI builders behave) — PRs are usually the bulk of build volume, so this
-// is what makes the cache actually pay off; a strict "protected-branch only" rule leaves
-// PRs permanently cold until a merge seeds it. Per-tenant Pod Identity scoping already
-// prevents CROSS-tenant access; the residual is a PR poisoning its OWN tenant's cache
-// (buildkit layers are content-addressed; the real vector is RUN --mount=type=cache).
-// High-security setups can opt into strict isolation (PR builds read-only) by setting
+// Cache-write policy. By DEFAULT, `pull_request` builds also write the shared per-tenant
+// cache (matching how hosted CI builders behave) — PRs are usually the bulk of build
+// volume, so this is what makes the cache actually pay off; a strict "protected-branch
+// only" rule leaves PRs permanently cold until a merge seeds it. Per-tenant Pod Identity
+// scoping already prevents CROSS-tenant access; the residual is a PR poisoning its OWN
+// tenant's cache (buildkit layers are content-addressed; the real vector is
+// RUN --mount=type=cache). Opt into strict isolation (PR builds read-only) with
 // BP_CACHE_ISOLATE_PR=true.
+//
+// `pull_request_target` is deliberately EXCLUDED from write-by-default and is ALWAYS
+// read-only: it runs untrusted fork code WITH the base repo's secrets and write
+// permissions — a fundamentally higher trust boundary than `pull_request` — so it must
+// never seed the shared cache (that would hand a fork PR the RUN --mount=type=cache
+// poisoning path into the tenant's cache). This holds regardless of BP_CACHE_ISOLATE_PR.
 const event = (process.env.GITHUB_EVENT_NAME || '').toLowerCase();
-const isPR = event === 'pull_request' || event === 'pull_request_target';
 const isolatePR = (process.env.BP_CACHE_ISOLATE_PR || '').toLowerCase() === 'true';
-if (isPR && isolatePR) {
-  core.info(`pull_request + BP_CACHE_ISOLATE_PR — cache read-only, not committing`);
+if (event === 'pull_request_target') {
+  core.info('pull_request_target — cache read-only (untrusted fork code + base secrets), not committing');
+  process.exit(0);
+}
+if (event === 'pull_request' && isolatePR) {
+  core.info('pull_request + BP_CACHE_ISOLATE_PR — cache read-only, not committing');
   process.exit(0);
 }
 
