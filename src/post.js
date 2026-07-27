@@ -28,7 +28,7 @@ function run(file, args, opts) { execFileSync(file, args, { stdio: 'inherit', ..
 function emitMetric(name, value, unit, ns, region) {
   try {
     execFileSync('aws', ['cloudwatch', 'put-metric-data',
-      '--namespace', 'buildpulse/runners', '--metric-name', name,
+      '--namespace', 'BP/Runners', '--metric-name', name,
       '--unit', unit, '--value', String(value),
       '--dimensions', `Tenant=${ns}`, '--region', region],
       { stdio: 'ignore', timeout: 15000 });
@@ -81,16 +81,19 @@ function commitToS3(bucket, ns, region) {
   return bytes;
 }
 
-// Trust boundary (S3 review): a build triggered by a pull_request (especially from a
-// fork) runs untrusted code, so it may READ the warm cache (hydrate happens in the
-// init regardless) but must never WRITE it — otherwise a "successful" PR build could
-// poison the layer/mount cache that a later protected-branch build trusts. Push and
-// workflow_dispatch builds (default/feature branches) do write. Override with
-// BP_CACHE_WRITE=force only if you accept the risk.
+// Cache-write policy. By DEFAULT, pull_request builds also write the shared per-tenant
+// cache (matching how hosted CI builders behave) — PRs are usually the bulk of build volume, so this
+// is what makes the cache actually pay off; a strict "protected-branch only" rule leaves
+// PRs permanently cold until a merge seeds it. Per-tenant Pod Identity scoping already
+// prevents CROSS-tenant access; the residual is a PR poisoning its OWN tenant's cache
+// (buildkit layers are content-addressed; the real vector is RUN --mount=type=cache).
+// High-security setups can opt into strict isolation (PR builds read-only) by setting
+// BP_CACHE_ISOLATE_PR=true.
 const event = (process.env.GITHUB_EVENT_NAME || '').toLowerCase();
-const untrusted = event === 'pull_request' || event === 'pull_request_target';
-if (untrusted && (process.env.BP_CACHE_WRITE || '').toLowerCase() !== 'force') {
-  core.info(`untrusted event (${event}) — using cache read-only, not committing (no poisoning)`);
+const isPR = event === 'pull_request' || event === 'pull_request_target';
+const isolatePR = (process.env.BP_CACHE_ISOLATE_PR || '').toLowerCase() === 'true';
+if (isPR && isolatePR) {
+  core.info(`pull_request + BP_CACHE_ISOLATE_PR — cache read-only, not committing`);
   process.exit(0);
 }
 

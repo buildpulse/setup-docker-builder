@@ -18,7 +18,7 @@ function emitHydrateMetric(ns) {
     let warm = 0;
     try { warm = fs.readdirSync('/home/runner/buildkit-root').length > 0 ? 1 : 0; } catch (_) {}
     execFileSync('aws', ['cloudwatch', 'put-metric-data',
-      '--namespace', 'buildpulse/runners', '--metric-name', 'CacheHydrate',
+      '--namespace', 'BP/Runners', '--metric-name', 'CacheHydrate',
       '--unit', 'Count', '--value', String(warm),
       '--dimensions', `Tenant=${ns || 'unknown'}`,
       '--region', process.env.AWS_REGION || 'us-west-2'],
