@@ -24,6 +24,21 @@ const MAX_CACHE_GB = parseInt(process.env.BP_MAX_CACHE_GB || '10', 10) || 10;
 
 function run(file, args, opts) { execFileSync(file, args, { stdio: 'inherit', ...(opts || {}) }); }
 
+// List a directory as root. The snapshotter's snapshot dirs are daemon-owned and can be
+// mode 0700, so the runner uid cannot readdir them directly now that /nvme-cache is no
+// longer blanket-chowned. Returns [] on any error (treated as "nothing to commit here").
+function sudoList(dir) {
+  try {
+    return execFileSync('sudo', ['-n', 'ls', '-1', dir], { encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+  } catch (_) { return []; }
+}
+
+// Does a path exist (as root)? Used where the runner uid may lack traverse permission.
+function sudoExists(p) {
+  try { execFileSync('sudo', ['-n', 'test', '-e', p]); return true; } catch (_) { return false; }
+}
+
 // Best-effort CloudWatch metric (P1 observability). Failures never affect the build.
 function emitMetric(name, value, unit, ns, region) {
   try {
@@ -54,13 +69,16 @@ function commitToNvme() {
   // sudo. /nvme-cache is this build's isolated persistent cache dir.
   run('sudo', ['-n', 'sync']);
   run('sudo', ['-n', 'cp', '-a', '/home/runner/buildkit-root/.', '/nvme-cache/']);
-  // buildkitd writes its state as uid 1000 with restrictive per-file perms (extracted
-  // layer files can be 0600/0000). Hand the whole tenant cache to the runner uid so the
-  // non-root aws CLI — which carries the tenant Pod Identity creds — can read every object
-  // for the incremental S3 sync. buildkitd never reads /nvme-cache directly (hydrate
-  // re-chowns its working --root to 1000), so this ownership is inert for the daemon.
-  run('sudo', ['-n', 'chown', '-R', `${process.getuid()}:${process.getgid()}`, '/nvme-cache']);
-  core.info('committed docker layer cache -> node NVMe (LWW)');
+  // Hand the cache to the runner uid so the non-root aws CLI (Pod Identity creds) can read +
+  // TRAVERSE it for the S3 sync — BUT prune the snapshot filesystems: a blanket `chown -R`
+  // would collapse the per-file uids INSIDE the restored layers (a uid-999 non-root image's
+  // baked ~/.cache -> the runner uid, then the hydrate collapses again to uid 1000 = the
+  // daemon's userns root), so the non-root build's next (warm) build can't write it. Pruning
+  // …/snapshots/snapshots/<id>/fs keeps those exact uids; the S3 commit tars them privileged
+  // with `--numeric-owner` and the hydrate restores + re-chowns everything-but-fs to 1000.
+  run('sudo', ['-n', 'find', '/nvme-cache', '-path', '*/snapshots/snapshots/*/fs', '-prune',
+    '-o', '-exec', 'chown', `${process.getuid()}:${process.getgid()}`, '{}', '+']);
+  core.info('committed docker layer cache -> node NVMe (LWW, ownership preserved)');
 }
 
 // Locate the buildkit snapshotter dir (runc-overlayfs / runc-native / runc-fuse-overlayfs).
@@ -105,28 +123,41 @@ function commitToS3(bucket, ns, region) {
 
   // 1) SNAPSHOTS — per-id compressed archive; upload only ids missing from S3 (immutable).
   const have = new Set(s3Basenames(`${base}/snap/`, region).map((k) => k.replace(/\.tar\.zst$/, '')));
-  let localIds = [];
-  try { localIds = fs.readdirSync(snapDir).filter((x) => /^[0-9]+$/.test(x)); } catch (_) { /* none yet */ }
+  // Listed as root: the snapshotter dirs are daemon-owned and no longer chowned to the runner.
+  const localIds = sudoList(snapDir).filter((x) => /^[0-9]+$/.test(x));
   let newLayers = 0;
   for (const id of localIds) {
     if (have.has(id)) continue;
-    if (!fs.existsSync(`${snapDir}/${id}/fs`)) continue;
+    if (!sudoExists(`${snapDir}/${id}/fs`)) continue;
     // Unique per (pid,id): each build runs in its own pod with an isolated /tmp, so a
     // cross-build collision on this path can't actually happen, but scope it defensively.
     const tmp = `/tmp/snap-${process.pid}-${id}.tar.zst`;
     try {
-      run('env', ['ZSTD_NBTHREADS=0', 'tar', '--zstd', '--warning=no-file-ignored',
-        '-cf', tmp, '-C', `${snapDir}/${id}`, 'fs']);
+      // Privileged + --numeric-owner: the snapshot fs holds the build's per-file uids (a
+      // uid-999 non-root image's files are 0600, unreadable by the runner). Root reads them
+      // and --numeric-owner records the exact uids so the hydrate can restore them faithfully;
+      // hand the finished archive back to the runner so the Pod-Identity aws CLI can upload it.
+      run('sudo', ['-n', 'env', 'ZSTD_NBTHREADS=0', 'tar', '--zstd', '--numeric-owner',
+        '--warning=no-file-ignored', '-cf', tmp, '-C', `${snapDir}/${id}`, 'fs']);
+      run('sudo', ['-n', 'chown', `${process.getuid()}:${process.getgid()}`, tmp]);
+      // Integrity sidecar (R1/S2): hydrate verifies this per-snapshot digest before extracting,
+      // so a torn/tampered archive is discarded (cold start) rather than silently restored.
+      const sha = execFileSync('sha256sum', [tmp]).toString().trim().split(/\s+/)[0];
+      fs.writeFileSync(`${tmp}.sha256`, sha);
       run('aws', ['s3', 'cp', tmp, `${base}/snap/${id}.tar.zst`, '--region', region, '--only-show-errors']);
+      run('aws', ['s3', 'cp', `${tmp}.sha256`, `${base}/snap/${id}.tar.zst.sha256`, '--region', region, '--only-show-errors']);
       newLayers += 1;
     } catch (e) {
       core.warning(`snapshot ${id} skipped: ${e.message}`);
     } finally {
-      try { fs.rmSync(tmp, { force: true }); } catch (_) { /* best effort */ }
+      try { fs.rmSync(tmp, { force: true }); fs.rmSync(`${tmp}.sha256`, { force: true }); } catch (_) { /* best effort */ }
     }
   }
 
   // 2) BLOBS — content-addressed + already compressed; incremental skip-existing sync.
+  // The commitToNvme find-prune already handed the blobs + their parent dirs to the runner
+  // uid (blob ownership is irrelevant — content is digest-addressed and S3 carries no uids),
+  // so the non-root aws CLI can read + traverse to them directly.
   try {
     run('aws', ['s3', 'sync', blobsDir, `${base}/blobs/`, '--region', region,
       '--only-show-errors', '--no-progress']);
@@ -134,12 +165,17 @@ function commitToS3(bucket, ns, region) {
 
   // 3) METADATA — the mutable remainder as ONE atomic object, written LAST: the boltdb set
   //    + RUN --mount caches, minus the snapshots/blobs (handled above) and transient state.
-  run('env', ['ZSTD_NBTHREADS=0', 'tar', '--zstd', '--warning=no-file-ignored', '-cf', TAR, '-C', SRC,
+  // This remainder (runner-owned after the find-prune, excludes the snapshot fs) is tarred
+  // with --numeric-owner; the hydrate re-chowns everything-but-fs back to the daemon's uid
+  // 1000, so the boltdb is daemon-owned again when buildkitd reopens it. sudo is belt-and-
+  // suspenders in case any excluded-path sibling wasn't runner-readable.
+  run('sudo', ['-n', 'env', 'ZSTD_NBTHREADS=0', 'tar', '--zstd', '--numeric-owner', '--warning=no-file-ignored', '-cf', TAR, '-C', SRC,
     '--exclude', `./${snap}/snapshots/snapshots`,
     '--exclude', `./${snap}/content/blobs`,
     '--exclude', `./${snap}/content/ingest`,
     '--exclude', `./${snap}/executor`,
     '--exclude', './buildkitd.lock', '.']);
+  run('sudo', ['-n', 'chown', `${process.getuid()}:${process.getgid()}`, TAR]);
   // Integrity sidecar (R1/S2): hydrate verifies this digest before trusting the metadata.
   const digest = execFileSync('sha256sum', [TAR]).toString().trim().split(/\s+/)[0];
   fs.writeFileSync(SUM, digest);
@@ -149,20 +185,36 @@ function commitToS3(bucket, ns, region) {
   run('aws', ['s3', 'cp', SUM, `${metaObj}.sha256`, '--region', region, '--only-show-errors']);
   run('rm', ['-f', TAR, SUM]);
 
-  // 4) REFRESH — keep this ACTIVE tenant's layers alive under the bucket's LastModified
-  //    lifecycle expiry. snap/ + blobs/ objects are IMMUTABLE and not re-uploaded each build,
-  //    so without a touch their LastModified would age past the rule and an actively-built
-  //    tenant's base layers would be evicted (then rebuilt on the next cold hydrate). A
-  //    server-side copy-in-place (REPLACE metadata, NO data transfer) refreshes LastModified.
-  //    Abandoned tenants never run this, so their prefix still ages out. (Orphan cleanup —
-  //    objects no longer referenced by a live build — is the separate GC in runners#52.)
-  for (const pfx of ['snap', 'blobs']) {
-    try {
-      run('aws', ['s3', 'cp', `${base}/${pfx}/`, `${base}/${pfx}/`, '--recursive', '--region', region,
-        '--only-show-errors', '--no-progress', '--metadata-directive', 'REPLACE', '--metadata', 'bp-cache=v1']);
-    } catch (e) { core.warning(`cache LastModified refresh (${pfx}) skipped: ${e.message}`); }
-  }
-  core.info(`committed docker layer cache -> ${base}/ (${newLayers} new layer archive(s) + blobs sync + ${(bytes / 1e6).toFixed(1)}MB atomic metadata; lifecycle-refreshed)`);
+  // 4) REFRESH + ORPHAN GC — keep this ACTIVE tenant's REFERENCED layers alive under the
+  //    bucket's LastModified lifecycle expiry, via a server-side copy-in-place (REPLACE
+  //    metadata, NO data transfer). Crucially we refresh ONLY the objects this build actually
+  //    references (the local snapshot set + local blobs); objects no longer referenced
+  //    (orphans from a locally-pruned layer) are deliberately NOT touched, so they age out of
+  //    S3 via the lifecycle rule — that IS the orphan GC. Concurrency-safe: no deletes, so a
+  //    concurrent build refreshes its own set and only layers referenced by NOBODY age out.
+  //    Abandoned tenants never run this, so their whole prefix ages out. One `aws s3 cp` per
+  //    prefix (the CLI parallelizes), filtered with --exclude '*' + per-object --include.
+  const snapInc = [];
+  for (const id of localIds) { snapInc.push('--include', `${id}.tar.zst`, '--include', `${id}.tar.zst.sha256`); }
+  let blobInc = [];
+  try { blobInc = fs.readdirSync(`${blobsDir}/sha256`).flatMap((n) => ['--include', `sha256/${n}`]); } catch (_) { /* none */ }
+  // Batch the --include flags so a tenant with thousands of objects can't blow past OS
+  // ARG_MAX in a single exec (a failed refresh would silently skip that build's touch, and
+  // its objects could then age out). Each object contributes 2 argv entries; 1000/call keeps
+  // the arg list tiny. For typical caches (<1000 objects) this is still a single call.
+  const refresh = (pfx, includes) => {
+    const step = 1000 * 2;
+    for (let i = 0; i < includes.length; i += step) {
+      try {
+        run('aws', ['s3', 'cp', `${base}/${pfx}/`, `${base}/${pfx}/`, '--recursive', '--region', region,
+          '--only-show-errors', '--no-progress', '--metadata-directive', 'REPLACE', '--metadata', 'bp-cache=v1',
+          '--exclude', '*', ...includes.slice(i, i + step)]);
+      } catch (e) { core.warning(`cache refresh (${pfx}) batch skipped: ${e.message}`); }
+    }
+  };
+  refresh('snap', snapInc);
+  refresh('blobs', blobInc);
+  core.info(`committed docker layer cache -> ${base}/ (${newLayers} new layer archive(s) + blobs sync + ${(bytes / 1e6).toFixed(1)}MB atomic metadata; refreshed ${localIds.length} referenced snapshot(s), orphans age out)`);
   return bytes;
 }
 
