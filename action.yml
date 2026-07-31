@@ -4,7 +4,7 @@ description: >-
   runners, with a persistent layer cache — zero cache configuration. Drop-in
   replacement for docker/setup-buildx-action.
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
   post: 'dist/post.js'
   post-if: 'success()'
