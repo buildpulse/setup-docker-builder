@@ -1,13 +1,14 @@
 # buildpulse/setup-docker-builder
 
 [![CI](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml)
+<a href="https://buildpulse.io"><img src=".github/runs-on-buildpulse.svg" alt="Runs on BuildPulse" height="44" align="right"></a>
 
-> CI for this repository runs on [BuildPulse runners](https://buildpulse.io). The action is built on the product it configures.
+CI for this repository runs on [BuildPulse runners](https://buildpulse.io): the action is built on the product it configures.
 
 Drop-in replacement for `docker/setup-buildx-action` on BuildPulse docker-builder
 runners. Points buildx at the runner's **local rootless buildkitd sidecar**, whose
 state is hydrated from / committed to a **persistent per-tenant cache on node NVMe**.
-No `cache-from`/`cache-to` config — the cache is the daemon's own `--root`, so it
+No `cache-from`/`cache-to` config: the cache is the daemon's own `--root`, so it
 preserves layer cache *and* `RUN --mount=type=cache`.
 
 ```yaml
@@ -30,7 +31,7 @@ jobs:
 - On job **success only**, the post step **commits** the root back (Last-Write-Wins).
 
 ## Build
-`npm ci && npm run build` regenerates `dist/` (committed — GitHub Actions runs `dist/`).
+`npm ci && npm run build` regenerates `dist/` (committed; GitHub Actions runs `dist/`).
 
 ## Status
 v1. Needs: (1) extraction to its own `buildpulse/setup-docker-builder` repo to be
