@@ -1,7 +1,9 @@
-# buildpulse/setup-docker-builder
+<a href="https://buildpulse.io"><img src=".github/banner.svg" alt="setup-docker-builder, by BuildPulse" width="100%"></a>
 
-[![CI](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml)
-<a href="https://buildpulse.io"><img src=".github/runs-on-buildpulse.svg" alt="Runs on BuildPulse" height="44" align="right"></a>
+[![CI](https://img.shields.io/github/actions/workflow/status/buildpulse/setup-docker-builder/ci.yml?style=for-the-badge&label=CI&labelColor=15161B)](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/tag/buildpulse/setup-docker-builder?style=for-the-badge&label=RELEASE&labelColor=15161B&color=454ADE)](https://github.com/buildpulse/setup-docker-builder/tags)
+[![Last commit](https://img.shields.io/github/last-commit/buildpulse/setup-docker-builder?style=for-the-badge&label=LAST%20COMMIT&labelColor=15161B&color=E8590C)](https://github.com/buildpulse/setup-docker-builder/commits/main)
+<a href="https://buildpulse.io"><img src=".github/runs-on-buildpulse-compact.svg" alt="Runs on BuildPulse" height="28"></a>
 
 CI for this repository runs on [BuildPulse runners](https://buildpulse.io): the action is built on the product it configures.
 
