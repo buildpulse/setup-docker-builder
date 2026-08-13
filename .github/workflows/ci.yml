@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Pushes by maintainers build on BuildPulse runners.
+  build:
+    if: github.event_name == 'push'
+    runs-on: bp-ubuntu-latest-x64-2x
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - name: dist/ must match src/
+        run: git diff --exit-code dist/ || { echo "dist/ is stale; run npm run build and commit"; exit 1; }
+
+  # Pull requests (including forks) build on GitHub-hosted runners.
+  build-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - name: dist/ must match src/
+        run: git diff --exit-code dist/ || { echo "dist/ is stale; run npm run build and commit"; exit 1; }

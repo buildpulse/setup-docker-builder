@@ -1,5 +1,9 @@
 # buildpulse/setup-docker-builder
 
+[![CI](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/buildpulse/setup-docker-builder/actions/workflows/ci.yml)
+
+> CI for this repository runs on [BuildPulse runners](https://buildpulse.io). The action is built on the product it configures.
+
 Drop-in replacement for `docker/setup-buildx-action` on BuildPulse docker-builder
 runners. Points buildx at the runner's **local rootless buildkitd sidecar**, whose
 state is hydrated from / committed to a **persistent per-tenant cache on node NVMe**.
