@@ -5,8 +5,6 @@
 [![Last commit](https://img.shields.io/github/last-commit/buildpulse/setup-docker-builder?style=for-the-badge&label=LAST%20COMMIT&labelColor=15161B&color=E8590C)](https://github.com/buildpulse/setup-docker-builder/commits/main)
 <a href="https://buildpulse.io"><img src=".github/runs-on-buildpulse-compact.svg" alt="Runs on BuildPulse" height="28"></a>
 
-CI for this repository runs on [BuildPulse runners](https://buildpulse.io): the action is built on the product it configures.
-
 Drop-in replacement for `docker/setup-buildx-action` on BuildPulse docker-builder
 runners. Points buildx at the runner's **local rootless buildkitd sidecar**, whose
 state is hydrated from / committed to a **persistent per-tenant cache on node NVMe**.
