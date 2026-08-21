@@ -18,6 +18,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      - name: Unit tests
+        run: node --test __tests__/
       - run: npm run build
       - name: dist/ must match src/
         run: git diff --exit-code dist/ || { echo "dist/ is stale; run npm run build and commit"; exit 1; }
@@ -32,6 +34,8 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      - name: Unit tests
+        run: node --test __tests__/
       - run: npm run build
       - name: dist/ must match src/
         run: git diff --exit-code dist/ || { echo "dist/ is stale; run npm run build and commit"; exit 1; }
