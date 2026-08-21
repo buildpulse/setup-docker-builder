@@ -4,7 +4,8 @@
   "private": true,
   "description": "BuildPulse setup-docker-builder GitHub Action",
   "scripts": {
-    "build": "ncc build src/index.js -o dist --minify && ncc build src/post.js -o dist-post --minify && mv dist-post/index.js dist/post.js && rm -rf dist-post"
+    "build": "ncc build src/index.js -o dist --minify && ncc build src/post.js -o dist-post --minify && mv dist-post/index.js dist/post.js && rm -rf dist-post",
+    "test": "node --test __tests__/*.test.js"
   },
   "dependencies": {
     "@actions/core": "^1.11.1"
