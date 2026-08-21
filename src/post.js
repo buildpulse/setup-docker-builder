@@ -10,6 +10,7 @@
 // interpolated through a shell. Tenant/bucket are additionally charset-validated
 // before they reach the S3 URI, so a hostile value can neither inject nor traverse.
 const core = require('@actions/core');
+const { parseS3ListAges, nearExpiry } = require('./refresh-policy');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
@@ -285,8 +286,60 @@ function commitToS3(bucket, ns, region) {
   //    layers referenced by NOBODY age out. Abandoned tenants never run this, so their whole
   //    prefix (v1 leftovers included) ages out. One `aws s3 cp` per prefix (the CLI
   //    parallelizes), filtered with --exclude '*' + per-object --include.
-  const snapInc = [...new Set(Object.values(manifest))].flatMap((sha) => ['--include', `${sha}.tar.zst`]);
-  const blobInc = blobList.flatMap((n) => ['--include', `sha256/${n}`]);
+  //    Only objects actually CLOSE TO EXPIRY are copied. Touching one with six days left
+  //    on a seven-day rule buys nothing, and every copy is billed as a Tier1 PUT — these
+  //    refreshes measured ~3.8M Tier1 requests over 20 days, 83% of the entire S3 bill for
+  //    runner caching, dwarfing storage itself. A single LIST (Tier2, ~12x cheaper per
+  //    call, paginated 1000 keys at a time) gives every object's age, collapsing the copies
+  //    to just the ones about to age out.
+  //
+  //    The GC property is UNCHANGED. An object is refreshed only when this build references
+  //    it AND it is near expiry; unreferenced orphans are still never touched and still age
+  //    out. Skipping a YOUNG referenced object cannot expire it — by definition it has days
+  //    of life left, and any build inside that window refreshes it then. The only case that
+  //    changes is a tenant whose build interval exceeds the remaining headroom, and that
+  //    tenant's objects expire under the old code too.
+  //
+  //    Fails OPEN: if the LIST errors or yields nothing usable, ages is null and every
+  //    referenced object is refreshed exactly as before. A cost optimisation must never make
+  //    the cache less durable.
+  //    Threshold sizing. An object's worst-case age is `threshold + longest gap between
+  //    builds that reference it`, and that must stay under the bucket's lifecycle (7 days)
+  //    or a referenced layer expires. An active repo builds many times an hour on weekdays,
+  //    so the binding case is the weekend: observed inter-build gaps reach ~2.4 days. A
+  //    1-day threshold therefore caps age near 3.4d, leaving ~3.6 days of tolerance for an
+  //    unusually quiet stretch.
+  //
+  //    1 rather than 3 on purpose: a repo building hourly already skips the overwhelming
+  //    majority of refreshes at 1 day, and raising it to 3 buys little on what remains
+  //    while cutting the quiet-stretch tolerance from ~3.6 days to ~1.6. Nearly all of the
+  //    saving with most of the margin intact.
+  //
+  //    Raise it only alongside evidence about build cadence, and never above
+  //    (lifecycle_days - longest_observed_gap).
+  const REFRESH_WHEN_AGE_DAYS = Number(process.env.BP_CACHE_REFRESH_AGE_DAYS || 1);
+  //    Parsing and the fail-open rule live in src/refresh-policy.js so they can be tested;
+  //    only the AWS call and error handling stay here.
+  const objectAgesDays = (pfx) => {
+    try {
+      const out = awsOut(['s3', 'ls', `${base}/${pfx}/`, '--recursive', '--region', region]).toString();
+      return parseS3ListAges(out, Date.now());
+    } catch (e) {
+      core.warning(`cache age listing (${pfx}) failed, refreshing every referenced object: ${e.message}`);
+      return null;
+    }
+  };
+
+  const snapAges = objectAgesDays('snap-ca');
+  const blobAges = objectAgesDays('blobs');
+  const snapKeys = [...new Set(Object.values(manifest))].map((sha) => `${sha}.tar.zst`);
+  const blobKeys = blobList.map((n) => `sha256/${n}`);
+  const snapInc = snapKeys.filter((k) => nearExpiry(snapAges, k, REFRESH_WHEN_AGE_DAYS)).flatMap((k) => ['--include', k]);
+  const blobInc = blobKeys.filter((k) => nearExpiry(blobAges, k, REFRESH_WHEN_AGE_DAYS)).flatMap((k) => ['--include', k]);
+  core.info(
+    `cache refresh: ${snapInc.length / 2}/${snapKeys.length} snapshot(s) + ${blobInc.length / 2}/${blobKeys.length} blob(s) ` +
+      `refreshed (>=${REFRESH_WHEN_AGE_DAYS}d old); the rest still have lifecycle headroom`
+  );
   // Batch the --include flags so a tenant with thousands of objects can't blow past OS
   // ARG_MAX in a single exec (a failed refresh would silently skip that build's touch, and
   // its objects could then age out). Each object contributes 2 argv entries; 1000/call keeps
