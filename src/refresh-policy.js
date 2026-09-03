@@ -23,22 +23,32 @@
  * Lines look like:
  *   2026-08-20 11:40:12       2023 <ns>/<prefix>/<key>
  *
- * The timestamp is UTC. Keys are returned relative to `<ns>/<prefix>/` so they
- * match the `--include` patterns the caller builds. Unparseable lines are
- * skipped rather than throwing: a listing that is partly unreadable should
- * degrade to "refresh more than strictly necessary", never to a crash in a
- * post-step that runs after a successful build.
+ * The timestamp is UTC. Keys are returned relative to the listed prefix so they
+ * match the `--include` patterns the caller builds: pass `keyPrefix` (e.g.
+ * `<ns>/snap-ca/`, or `<ns>/<lane>/snap-ca/` on a lane-scoped cache) and the
+ * remainder after it is the key; a line outside that prefix is skipped. Without
+ * `keyPrefix` the legacy two-segment strip (`<ns>/<prefix>/`) applies.
+ * Unparseable lines are skipped rather than throwing: a listing that is partly
+ * unreadable should degrade to "refresh more than strictly necessary", never to
+ * a crash in a post-step that runs after a successful build.
  *
  * @param {string} text  raw stdout
  * @param {number} nowMs Date.now() equivalent, injectable for tests
+ * @param {string} [keyPrefix] listed prefix relative to the bucket, with trailing slash
  * @returns {Map<string, number>|null} null when nothing parsed (caller fails open)
  */
-function parseS3ListAges(text, nowMs) {
+function parseS3ListAges(text, nowMs, keyPrefix) {
     const ages = new Map();
     for (const line of String(text).split('\n')) {
         const m = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\d+\s+(.+)$/);
         if (!m) continue;
-        const key = m[2].split('/').slice(2).join('/'); // strip "<ns>/<prefix>/"
+        let key;
+        if (keyPrefix) {
+            if (!m[2].startsWith(keyPrefix)) continue;
+            key = m[2].slice(keyPrefix.length);
+        } else {
+            key = m[2].split('/').slice(2).join('/'); // strip "<ns>/<prefix>/"
+        }
         if (!key) continue;
         const t = Date.parse(m[1].replace(' ', 'T') + 'Z');
         if (Number.isNaN(t)) continue;

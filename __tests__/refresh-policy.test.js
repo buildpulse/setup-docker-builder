@@ -105,3 +105,30 @@ test('a threshold that would expire referenced layers is detectable', () => {
     // ever raising BP_CACHE_REFRESH_AGE_DAYS.
     assert.ok(worstCaseAgeDays(5, 2.37) > 7);
 });
+
+test('keyPrefix: keys are relative to the listed prefix (lane-scoped caches nest one level deeper)', () => {
+    const ages = parseS3ListAges(
+        ls([
+            '2026-08-20 00:00:00        10 org-x/lane-a/snap-ca/aaa.tar.zst',
+            '2026-08-20 00:00:00        10 org-x/lane-a/blobs/sha256/deadbeef',
+            '2026-08-20 00:00:00        10 org-x/snap-ca/unscoped.tar.zst'
+        ]),
+        NOW,
+        'org-x/lane-a/snap-ca/'
+    );
+    // the legacy two-segment strip would have yielded "snap-ca/aaa.tar.zst" here — a key
+    // that never matches an --include pattern, so every object would refresh every build.
+    assert.deepEqual([...ages.keys()], ['aaa.tar.zst']);
+});
+
+test('keyPrefix: the unscoped prefix keeps its keys and ignores lane objects', () => {
+    const ages = parseS3ListAges(
+        ls([
+            '2026-08-20 00:00:00        10 org-x/blobs/sha256/deadbeef',
+            '2026-08-20 00:00:00        10 org-x/lane-a/blobs/sha256/cafebabe'
+        ]),
+        NOW,
+        'org-x/blobs/'
+    );
+    assert.deepEqual([...ages.keys()], ['sha256/deadbeef']);
+});

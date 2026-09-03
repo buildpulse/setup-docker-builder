@@ -39,7 +39,7 @@ try {
   }
   core.saveState('bp_namespace', ns);
   emitHydrateMetric(ns);
-  core.info(`BuildPulse docker builder ready (local buildkitd, tenant=${ns || 'unknown'})`);
+  core.info(`BuildPulse docker builder ready (local buildkitd, tenant=${ns || 'unknown'}, cache lane=${process.env.BK_CACHE_LANE || 'default'})`);
 } catch (e) {
   core.setFailed(`setup-docker-builder failed: ${e.message}`);
 }
