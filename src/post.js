@@ -148,12 +148,27 @@ function s3Basenames(prefix, region) {
 //                              at all (they may already be latently desynced).
 // Reads run as the runner uid (commitToNvme handed it the cache); only fs/ of each snapshot
 // is archived — the overlay work/ dir is transient and mode-0000.
+//
+// LANE PREFIX (chart >=0.32.12). The fleet's buildkitd is ROOTLESS (uid 1000 + a userns, so a
+// file a build stage creates as uid 999 lands on disk under a shifted host uid) while metal's
+// runs as root in the kata guest (no shift). A snapshot committed by one lane and hydrated by
+// the other therefore carries the WRONG on-disk ownership, and the next non-root stage that
+// writes into it fails with EACCES (Wunderflats `api`: `/home/pptruser/.cache/yarn not
+// writable`, prod 2026-09-03). The chart sets BK_CACHE_LANE on the metal path only, and this
+// step commits under s3://<bucket>/<ns>/<lane>/ when it is set — the fleet key is unchanged, so
+// fleet tenants keep their cache and moving a tenant between lanes is a cold start, not a broken
+// build. The hydrate init container applies the same rule when it reads.
 const MANIFEST = 'bp-snap-manifest.json';
-function commitToS3(bucket, ns, region) {
+function cacheBase(bucket, ns, lane) {
   if (!SAFE.test(bucket)) throw new Error(`refusing unsafe bucket name: ${bucket}`);
   if (!SAFE.test(ns)) throw new Error(`refusing unsafe tenant namespace: ${ns}`);
+  if (lane && !SAFE.test(lane)) throw new Error(`refusing unsafe cache lane: ${lane}`);
+  const keyPrefix = lane ? `${ns}/${lane}/` : `${ns}/`;
+  return { base: `s3://${bucket}/${keyPrefix.replace(/\/$/, '')}`, keyPrefix };
+}
+function commitToS3(bucket, ns, region, lane) {
   if (!SAFE.test(region)) throw new Error(`refusing unsafe region: ${region}`);
-  const base = `s3://${bucket}/${ns}`;
+  const { base, keyPrefix } = cacheBase(bucket, ns, lane);
   const SRC = CACHE_SRC;
   const snap = snapshotterDir(SRC);
   const snapDir = `${SRC}/${snap}/snapshots/snapshots`;
@@ -323,7 +338,7 @@ function commitToS3(bucket, ns, region) {
   const objectAgesDays = (pfx) => {
     try {
       const out = awsOut(['s3', 'ls', `${base}/${pfx}/`, '--recursive', '--region', region]).toString();
-      return parseS3ListAges(out, Date.now());
+      return parseS3ListAges(out, Date.now(), `${keyPrefix}${pfx}/`);
     } catch (e) {
       core.warning(`cache age listing (${pfx}) failed, refreshing every referenced object: ${e.message}`);
       return null;
@@ -387,6 +402,8 @@ if (event === 'pull_request' && isolatePR) {
 
 const region = process.env.AWS_REGION || 'us-west-2';
 const ns = core.getState('bp_namespace') || process.env.POD_NAMESPACE || 'unknown';
+// Set by the chart on the metal (root-in-guest buildkitd) path only; see commitToS3.
+const lane = process.env.BK_CACHE_LANE || '';
 
 // Cap size, then Tier 1 — node-local NVMe. If tier 1 fails there is nothing to push.
 pruneCache();
@@ -410,7 +427,7 @@ if (!bucket) {
   const t0 = Date.now();
   try {
     if (!ns || ns === 'unknown') throw new Error('tenant namespace unknown');
-    const bytes = commitToS3(bucket, ns, region);
+    const bytes = commitToS3(bucket, ns, region, lane);
     emitMetric('CacheCommitBytes', bytes, 'Bytes', ns, region);
     emitMetric('CacheCommitSeconds', (Date.now() - t0) / 1000, 'Seconds', ns, region);
   } catch (e) {
