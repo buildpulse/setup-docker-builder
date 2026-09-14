@@ -6,10 +6,17 @@
 const core = require('@actions/core');
 const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
+const { cacheRegion, awsOpts: awsOptsFor } = require('./aws-env');
 
 const SOCK = 'unix:///run/buildkit/buildkitd.sock';
 
 function sh(cmd) { execSync(cmd, { stdio: 'inherit' }); }
+
+// Region + credentials for the cache's own AWS calls (see src/aws-env.js). The dedicated
+// credentials go on the SPAWNED CHILD's env only — never on process.env, which would
+// redirect the job's own later `aws` calls.
+const CACHE_REGION = cacheRegion(process.env);
+const awsOpts = (opts) => awsOptsFor(opts, process.env);
 
 // Best-effort cache hit-rate signal (P1 observability): 1 = the node-local cache was
 // warm when this build started, 0 = cold. Averaging the metric gives the hit rate.
@@ -21,8 +28,8 @@ function emitHydrateMetric(ns) {
       '--namespace', 'BP/Runners', '--metric-name', 'CacheHydrate',
       '--unit', 'Count', '--value', String(warm),
       '--dimensions', `Tenant=${ns || 'unknown'}`,
-      '--region', process.env.AWS_REGION || 'us-west-2'],
-      { stdio: 'ignore', timeout: 15000 });
+      '--region', CACHE_REGION],
+      awsOpts({ stdio: 'ignore', timeout: 15000 }));
   } catch (_) { /* metrics are best-effort */ }
 }
 

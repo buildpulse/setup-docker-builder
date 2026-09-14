@@ -11,6 +11,7 @@
 // before they reach the S3 URI, so a hostile value can neither inject nor traverse.
 const core = require('@actions/core');
 const { parseS3ListAges, nearExpiry } = require('./refresh-policy');
+const { cacheRegion, awsOpts: awsOptsFor } = require('./aws-env');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
@@ -25,21 +26,26 @@ const MAX_CACHE_GB = parseInt(process.env.BP_MAX_CACHE_GB || '10', 10) || 10;
 
 function run(file, args, opts) { execFileSync(file, args, { stdio: 'inherit', ...(opts || {}) }); }
 
+// Credentials for the cache's own AWS calls (see src/aws-env.js). They go on the
+// SPAWNED CHILD's env only — never on process.env, which would redirect the job's own
+// later `aws` calls.
+const awsOpts = (opts) => awsOptsFor(opts, process.env);
+
 // Persistent-root mode (runners#72, chart >=0.14.4 with buildkitBuilder.persistentRoot):
 // the buildkit --root IS the per-tenant NVMe dir — there is no per-pod copy, so the
 // NVMe commit tier disappears and the S3 commit reads the LIVE root. The live root is
-// daemon-owned (uid 1000), so aws reads run privileged with the Pod-Identity env
-// preserved (-E: AWS_CONTAINER_CREDENTIALS_FULL_URI + token file, root-readable).
+// daemon-owned (uid 1000), so aws reads run privileged with the credential env
+// preserved (-E), which is also how the above two variables reach the privileged aws.
 const PERSISTENT = (process.env.BP_PERSISTENT_BK_ROOT || '') === 'true';
 const CACHE_SRC = PERSISTENT ? '/home/runner/buildkit-root' : '/nvme-cache';
 function runAws(args) {
-  if (PERSISTENT) run('sudo', ['-n', '-E', 'aws', ...args]);
-  else run('aws', args);
+  if (PERSISTENT) run('sudo', ['-n', '-E', 'aws', ...args], awsOpts());
+  else run('aws', args, awsOpts());
 }
 function awsOut(args) {
   return PERSISTENT
-    ? execFileSync('sudo', ['-n', '-E', 'aws', ...args])
-    : execFileSync('aws', args);
+    ? execFileSync('sudo', ['-n', '-E', 'aws', ...args], awsOpts())
+    : execFileSync('aws', args, awsOpts());
 }
 
 // List a directory as root. The snapshotter's snapshot dirs are daemon-owned and can be
@@ -64,7 +70,7 @@ function emitMetric(name, value, unit, ns, region) {
       '--namespace', 'BP/Runners', '--metric-name', name,
       '--unit', unit, '--value', String(value),
       '--dimensions', `Tenant=${ns}`, '--region', region],
-      { stdio: 'ignore', timeout: 15000 });
+      awsOpts({ stdio: 'ignore', timeout: 15000 }));
   } catch (_) { /* metrics are best-effort */ }
 }
 
@@ -398,7 +404,8 @@ if (event === 'pull_request' && isolatePR) {
   process.exit(0);
 }
 
-const region = process.env.AWS_REGION || 'us-west-2';
+// Dedicated region first, then the ambient one, then the default (see src/aws-env.js).
+const region = cacheRegion(process.env);
 const ns = core.getState('bp_namespace') || process.env.POD_NAMESPACE || 'unknown';
 // Set by the runner when its buildkitd runs in a different mode; see commitToS3.
 const lane = process.env.BK_CACHE_LANE || '';
