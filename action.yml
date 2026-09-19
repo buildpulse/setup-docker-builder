@@ -1,8 +1,6 @@
 name: 'BuildPulse Setup Docker Builder'
 description: >-
-  Point buildx at the local buildkitd builder on BuildPulse docker-builder
-  runners, with a persistent layer cache and zero cache configuration. Drop-in
-  replacement for docker/setup-buildx-action.
+  Use the local buildkit builder on BuildPulse runners, with a persistent layer cache. Drop-in for docker/setup-buildx-action.
 author: BuildPulse
 branding:
   icon: 'package'
