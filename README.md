@@ -32,8 +32,3 @@ jobs:
 
 ## Build
 `npm ci && npm run build` regenerates `dist/` (committed; GitHub Actions runs `dist/`).
-
-## Status
-v1. Needs: (1) extraction to its own `buildpulse/setup-docker-builder` repo to be
-`uses:`-able externally; (2) dev hardening of the commit step (quiesce buildkitd
-before copy to close the consistency window).

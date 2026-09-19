@@ -31,7 +31,7 @@ function run(file, args, opts) { execFileSync(file, args, { stdio: 'inherit', ..
 // later `aws` calls.
 const awsOpts = (opts) => awsOptsFor(opts, process.env);
 
-// Persistent-root mode (runners#72, chart >=0.14.4 with buildkitBuilder.persistentRoot):
+// Persistent-root mode:
 // the buildkit --root IS the per-tenant NVMe dir — there is no per-pod copy, so the
 // NVMe commit tier disappears and the S3 commit reads the LIVE root. The live root is
 // daemon-owned (uid 1000), so aws reads run privileged with the credential env
@@ -100,7 +100,7 @@ function commitToNvme() {
   // sudo. /nvme-cache is this build's isolated persistent cache dir.
   run('sudo', ['-n', 'sync']);
   run('sudo', ['-n', 'cp', '-a', '/home/runner/buildkit-root/.', '/nvme-cache/']);
-  // Hand the cache to the runner uid so the non-root aws CLI (Pod Identity creds) can read +
+  // Hand the cache to the runner uid so the non-root aws CLI can read +
   // TRAVERSE it for the S3 sync — BUT prune the snapshot filesystems: a blanket `chown -R`
   // would collapse the per-file uids INSIDE the restored layers (a uid-999 non-root image's
   // baked ~/.cache -> the runner uid, then the hydrate collapses again to uid 1000 = the
@@ -115,7 +115,7 @@ function commitToNvme() {
 // Locate the buildkit snapshotter dir (runc-overlayfs / runc-native / runc-fuse-overlayfs).
 function snapshotterDir(src) {
   // PERSISTENT: the live root can be daemon-owned/0700 — readdir as the runner uid
-  // would EACCES and silently no-op every S3 commit (review catch on runners#74).
+  // would EACCES and silently no-op every S3 commit.
   const entries = PERSISTENT ? sudoList(src) : fs.readdirSync(src);
   const d = entries.find((x) => x.startsWith('runc-'));
   if (!d) throw new Error('no runc-* snapshotter dir under cache root');
@@ -182,8 +182,7 @@ function commitToS3(bucket, ns, region, lane) {
   // pinned in the manifest (so a cold hydrate fetches exactly this set instead of the whole
   // blobs/ prefix) and reused for the lifecycle refresh below. The prefix accumulates
   // orphans — locally-pruned layers stay in S3 until the lifecycle expires them — so the
-  // whole-prefix sync a hydrate used to do pulls far more than the live set (12.8GB vs
-  // ~3GB referenced on the largest tenant).
+  // whole-prefix sync a hydrate used to do pulls far more than the live set.
   //
   // The set is only PINNED when every entry is a well-formed digest. Anything unexpected
   // means the listing does not fully describe the content store, and a pinned-but-incomplete
@@ -306,11 +305,10 @@ function commitToS3(bucket, ns, region, lane) {
   //    prefix (v1 leftovers included) ages out. One `aws s3 cp` per prefix (the CLI
   //    parallelizes), filtered with --exclude '*' + per-object --include.
   //    Only objects actually CLOSE TO EXPIRY are copied. Touching one with six days left
-  //    on a seven-day rule buys nothing, and every copy is billed as a Tier1 PUT — these
-  //    refreshes measured ~3.8M Tier1 requests over 20 days, 83% of the entire S3 bill for
-  //    runner caching, dwarfing storage itself. A single LIST (Tier2, ~12x cheaper per
-  //    call, paginated 1000 keys at a time) gives every object's age, collapsing the copies
-  //    to just the ones about to age out.
+  //    on a seven-day rule buys nothing, and every copy is billed as a PUT request, which
+  //    costs far more than the storage itself. A single LIST (much cheaper per call,
+  //    paginated 1000 keys at a time) gives every object's age, collapsing the copies to
+  //    just the ones about to age out.
   //
   //    The GC property is UNCHANGED. An object is refreshed only when this build references
   //    it AND it is near expiry; unreferenced orphans are still never touched and still age
@@ -382,7 +380,7 @@ function commitToS3(bucket, ns, region, lane) {
 // Cache-write policy. By DEFAULT, `pull_request` builds also write the shared per-tenant
 // cache (matching how hosted CI builders behave) — PRs are usually the bulk of build
 // volume, so this is what makes the cache actually pay off; a strict "protected-branch
-// only" rule leaves PRs permanently cold until a merge seeds it. Per-tenant Pod Identity
+// only" rule leaves PRs permanently cold until a merge seeds it. Per-tenant credential
 // scoping already prevents CROSS-tenant access; the residual is a PR poisoning its OWN
 // tenant's cache (buildkit layers are content-addressed; the real vector is
 // RUN --mount=type=cache). Opt into strict isolation (PR builds read-only) with

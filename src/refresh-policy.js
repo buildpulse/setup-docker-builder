@@ -8,10 +8,9 @@
 // never touched, so they age out — that is the entire garbage collection story.
 //
 // Copying every referenced object on every commit is what made this expensive:
-// each copy is billed as a Tier1 PUT, and across the fleet those refreshes were
-// ~3.8M Tier1 requests in 20 days — 83% of the whole S3 bill for runner caching,
-// far more than storage. Touching an object with six days left on a seven-day
-// rule buys nothing.
+// each copy is billed as a PUT request, and those requests cost far more than the
+// storage itself. Touching an object with six days left on a seven-day rule buys
+// nothing.
 //
 // So: one LIST per prefix (Tier2, ~12x cheaper per call) gives every object's
 // age, and only those near expiry are copied. The GC property is unchanged —
