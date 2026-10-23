@@ -410,6 +410,14 @@ const lane = process.env.BK_CACHE_LANE || '';
 
 // Cap size, then Tier 1 — node-local NVMe. If tier 1 fails there is nothing to push.
 pruneCache();
+
+// Lean EC2 hosts keep the buildkit root on the host and the BuildPulse agent commits it
+// after the job, so neither tier below applies. Without this the NVMe copy finds no
+// /home/runner/buildkit-root and every build ends on a warning plus an error metric.
+if (process.env.BP_SUBSTRATE === 'ec2') {
+  core.info('lean host: the BuildPulse agent commits the layer cache after the job');
+  process.exit(0);
+}
 try {
   if (PERSISTENT) {
     core.info('persistent buildkit root — no NVMe copy tier (root IS the node cache)');
